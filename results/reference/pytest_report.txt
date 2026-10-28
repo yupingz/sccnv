@@ -1,0 +1,23 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.16, pytest-9.1.1, pluggy-1.6.0 -- /home/claude/.claude-science/orgs/18a7adf9-2431-4be1-baa2-5ab8a760c725/workspaces/e4502bde-df1e-4fd1-be8a-39df3195fb2d/.venv/spatial-cnv/bin/python
+testpaths: tests
+collecting ... collected 18 items
+tests/test_benchmark_offsets.py::test_truth_classes_and_mode_center PASSED
+tests/test_benchmark_offsets.py::test_eval_profiles_perfect_and_null_predictions PASSED
+tests/test_benchmark_offsets.py::test_truth_threshold_arguments_are_honoured PASSED
+tests/test_benchmark_offsets.py::test_segments_to_gene_log2_and_bin_truth PASSED
+tests/test_benchmark_offsets.py::test_offset_table_recovers_known_shift_and_cancels_donor_effects PASSED
+tests/test_binning.py::test_bins_are_ordered_within_arms_and_sized_as_requested PASSED
+tests/test_binning.py::test_blacklist_regex_removes_matching_genes PASSED
+tests/test_counts.py::test_stochastic_round_is_unbiased_and_integer PASSED
+tests/test_counts.py::test_downsample_counts_fraction PASSED
+tests/test_counts.py::test_split_counts_partitions_every_umi PASSED
+tests/test_pipeline.py::test_tumour_gain_and_loss_are_recovered PASSED
+tests/test_pipeline.py::test_heldout_diploid_cells_are_not_called PASSED
+tests/test_pipeline.py::test_reference_metacells_never_cross_groups PASSED
+tests/test_pipeline.py::test_cell_matrix_shape_and_dropped_cells PASSED
+tests/test_pipeline.py::test_events_recovered_with_and_without_count_splitting PASSED
+tests/test_pipeline.py::test_lineage_offset_is_applied_to_query_metacells_only PASSED
+tests/test_pipeline.py::test_run_refuses_to_start_without_reference_metacells PASSED
+tests/test_pipeline.py::test_null_simulation_yields_no_calls PASSED
+============================== 18 passed in 4.89s ==============================

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sccnv"
+version = "0.1.0"
+description = "Expression-only copy-number inference from scRNA-seq with lineage-aware references and count-split metacells"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "pandas", "numba", "scikit-learn", "matplotlib", "requests"]
+
+[project.optional-dependencies]
+cluster = ["scanpy", "anndata", "igraph", "leidenalg"]
+baseline = ["infercnvpy"]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["sccnv"]

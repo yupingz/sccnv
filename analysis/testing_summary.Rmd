@@ -1,0 +1,258 @@
+---
+title: "sccnv: summary of testing"
+subtitle: "Expression-only copy-number inference with lineage-aware references and count-split metacells"
+output:
+  github_document:
+    toc: true
+    html_preview: false
+  html_document:
+    toc: true
+    toc_float: true
+    self_contained: true
+    df_print: paged
+params:
+  reference_dir: "../results/reference"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.path = "testing_summary_files/")
+suppressPackageStartupMessages({ library(dplyr); library(tidyr) })
+ref  <- Sys.getenv("SCCNV_REFERENCE", params$reference_dir)
+rd   <- function(f) read.csv(file.path(ref, f), check.names = FALSE, stringsAsFactors = FALSE)
+img  <- function(f) knitr::include_graphics(file.path(ref, f))
+f2   <- function(x, d = 2) formatC(x, format = "f", digits = d)
+pct  <- function(x, d = 0) paste0(formatC(100 * x, format = "f", digits = d), "%")
+tab  <- function(x, ...) knitr::kable(x, row.names = FALSE, ...)
+```
+
+This report summarises how the pipeline in `sccnv/` was tested. Every number below is computed from the result tables in
+`results/reference/` when the report is knitted; nothing is typed in by hand. Those tables were produced by the scripts in `scripts/`
+(see the README for the mapping and for the provenance caveats). The statistics are descriptive; no confidence intervals or
+multiple-testing corrections were computed, and the sample sizes are small (6 scored cell lines, 1 metastasis, 7 primary tumours, 3 healthy donors).
+
+# 1. What was tested
+
+| Level | Data | Truth | Question |
+|---|---|---|---|
+| Unit tests | simulated Poisson counts on a toy genome | known gain and loss | does the code behave as specified? |
+| Cell-line mixture | 6 prostate cancer lines (scored) + PrEC (reference) + PNT2 (in the object, not scored; 10x 3') | CCLE DNA copy number (WGS or SNP6) | does expression recover copy number? |
+| Metastasis (WA71) | lymph-node metastasis, tumour + endothelial/SMC/immune cells | tumour DNA segment table | same, in a real tumour with stroma and immune cells |
+| Depth downsampling | the three sets above | as above | do metacells keep sensitivity at low UMI depth? |
+| Healthy prostate | 3 donors, 5 libraries (10x 3' v2) | diploid by assumption | false-positive control; lineage offsets |
+| Primary tumours | 7 patients, benign + tumour library each | none (no DNA) | descriptive only |
+
+# 2. Unit tests
+
+```{r pytest}
+x <- readLines(file.path(ref, "pytest_report.txt"))
+x <- x[grepl("PASSED|FAILED|ERROR|passed|failed", x)]
+n_pass <- sum(grepl("PASSED", x)); n_fail <- sum(grepl("FAILED|ERROR", x)) 
+```
+
+`pytest` ran `r n_pass` tests with `r n_fail` failures (`results/reference/pytest_report.txt`). They use simulated counts, so they test the code, not
+the biology:
+
+```{r pytest-list}
+tests <- sub("^tests/", "", sub(" (PASSED|FAILED).*$", "", x[grepl("::", x)]))
+tests <- data.frame(file = sub("::.*$", "", tests), test = sub("^.*::test_", "", tests))
+tests$test <- gsub("_", " ", tests$test)
+tab(tests)
+```
+
+The simulation-based tests cover: recovery of a 1.6x gain and a 0.5x loss with calls of the right sign; a null simulation (tumour = reference) with no calls;
+no calls in held-out diploid cells; metacells that never cross group labels; the lineage offset shifting query metacells but not reference metacells;
+and recovery with and without count splitting.
+
+# 3. Depth downsampling
+
+Each cell's UMIs were thinned binomially to a fraction of the original depth. Four methods were compared: single cells scored by this
+pipeline, single cells scored by an inferCNV-style baseline (log-CPM, reference-subtracted, running mean over 101 genes), and 20- or 50-cell metacells
+built by this pipeline. Sensitivity is measured at a per-cell false-positive rate of 10% on the truth-neutral bins of the same cell
+(`sens_*_fpr10`). **That metric uses the truth to set the threshold, which equalises false-positive rates across methods but is not a deployable
+threshold.**
+
+```{r depth-fig, out.width="100%"}
+img("fig_depth_sensitivity.png")
+```
+
+```{r depth-table}
+d <- rd("depth_experiment_summary.csv")
+keep <- c("single-cell (pipeline)", "inferCNV-style (single cell)", "metacell-20 (pipeline)", "metacell-50 (pipeline)")
+ds <- c("cell lines (CCLE DNA)", "WA71 metastasis, stroma ref (tumour DNA)", "primary tumours, split-half consensus")
+dd <- d %>% filter(dataset %in% ds, method %in% keep) %>% group_by(dataset) %>% filter(frac %in% c(1, min(frac))) %>% ungroup() %>%
+  mutate(depth = ifelse(frac == 1, "full depth", "lowest depth"), umi = round(median_umi_per_cell)) %>%
+  arrange(match(dataset, ds), desc(frac), match(method, keep)) %>%
+  transmute(dataset, depth, `median UMI/cell` = umi, method, `gain sensitivity` = f2(sens_gain_fpr10), `loss sensitivity` = f2(sens_loss_fpr10), `Pearson with truth` = f2(pearson))
+tab(dd)
+g <- function(ds_, meth, col, lowest = TRUE) { s <- d %>% filter(dataset == ds_, method == meth); s <- s[if (lowest) which.min(s$frac) else which.max(s$frac), ]; s[[col]] }
+```
+
+* **Metacells versus single cells at the lowest depth.** Gain sensitivity: cell lines `r f2(g(ds[1], "single-cell (pipeline)", "sens_gain_fpr10"))` → `r f2(g(ds[1], "metacell-20 (pipeline)", "sens_gain_fpr10"))`;
+  WA71 `r f2(g(ds[2], "single-cell (pipeline)", "sens_gain_fpr10"))` → `r f2(g(ds[2], "metacell-20 (pipeline)", "sens_gain_fpr10"))`;
+  primary tumours `r f2(g(ds[3], "single-cell (pipeline)", "sens_gain_fpr10"))` → `r f2(g(ds[3], "metacell-20 (pipeline)", "sens_gain_fpr10"))`
+  (single cell → 20-cell metacell). Loss sensitivity improves in the same direction in all three sets.
+* **WA71 matches full-depth single cells at about 5% of the depth.** A 20-cell metacell at `r round(g(ds[2], "metacell-20 (pipeline)", "median_umi_per_cell"))` UMI/cell has gain
+  sensitivity `r f2(g(ds[2], "metacell-20 (pipeline)", "sens_gain_fpr10"))`, against `r f2(g(ds[2], "single-cell (pipeline)", "sens_gain_fpr10", FALSE))` for single cells at `r round(g(ds[2], "single-cell (pipeline)", "median_umi_per_cell", FALSE))` UMI/cell.
+* **WA71: the gain comes from metacell aggregation, not from this pipeline's single-cell scoring.** At full depth, single cells scored by the inferCNV-style baseline reach gain sensitivity `r f2(g(ds[2], "inferCNV-style (single cell)", "sens_gain_fpr10", FALSE))` and Pearson `r f2(g(ds[2], "inferCNV-style (single cell)", "pearson", FALSE))`,
+  against `r f2(g(ds[2], "single-cell (pipeline)", "sens_gain_fpr10", FALSE))` and `r f2(g(ds[2], "single-cell (pipeline)", "pearson", FALSE))` for single cells in this pipeline; the 20-cell metacells reach `r f2(g(ds[2], "metacell-20 (pipeline)", "sens_gain_fpr10", FALSE))` and `r f2(g(ds[2], "metacell-20 (pipeline)", "pearson", FALSE))`.
+  The metacell profile also correlates less with truth than the baseline's single-cell profile at full depth. In the cell lines, this pipeline's single-cell mode is ahead of the baseline.
+* **Loss detection in WA71 is weak for every method** (best `r f2(max(d$sens_loss_fpr10[d$dataset == ds[2]]))`). Most bins sit at copy number 3 or 4 (Section 4), so many losses are CN 3 against a CN 4 baseline, where the expected log2 ratio is only about -0.4; this likely limits loss sensitivity.
+* **Depth-adaptive metacells (WA71 only).** Sizing metacells to a UMI target gave the following gain sensitivities across depths:
+
+```{r depth-adaptive}
+d %>% filter(dataset == ds[2], method %in% c("metacell-20 (pipeline)", "metacell-80k UMI (pipeline)")) %>%
+  transmute(`median UMI/cell` = round(median_umi_per_cell), method, `gain sensitivity` = f2(sens_gain_fpr10)) %>%
+  pivot_wider(names_from = method, values_from = `gain sensitivity`) %>% arrange(desc(`median UMI/cell`)) %>% tab()
+```
+
+* **Count splitting.** The 20-cell metacells with and without count splitting (`metacell-20 (pipeline)` versus `metacell-20, no count split`):
+
+```{r nosplit}
+d %>% filter(method %in% c("metacell-20 (pipeline)", "metacell-20, no count split"), dataset %in% ds) %>% group_by(dataset) %>% filter(frac == min(frac)) %>% ungroup() %>%
+  transmute(dataset, `median UMI/cell` = round(median_umi_per_cell), method, `gain sensitivity` = f2(sens_gain_fpr10), `loss sensitivity` = f2(sens_loss_fpr10)) %>% tab()
+```
+
+  Count splitting has no consistent sensitivity cost in these data. Its protection against false positives was **not measured directly**; the protection is argued on theoretical grounds only.
+
+# 4. Agreement with DNA copy number (WA71)
+
+```{r wa71-fig, out.width="85%"}
+img("fig_wa71_dna_vs_expression.png")
+```
+
+```{r wa71-numbers}
+w0 <- rd("wa71_healthy_offset_results.csv") %>% filter(profile == "seg", trial == "no offset")
+```
+
+The pooled expression profile of the tumour metacells correlates with the DNA copy number across bins (Pearson r = `r f2(w0$pooled_pearson)` with no offset).
+Expression ratios rise with copy number overall, but the bins at copy number 3 and 4 overlap strongly, and the extremes rest on very few bins (one bin each at copy number 1, 9 and 10 in panel c).
+The DNA truth is mode-centred (expression cannot give ploidy), so the comparison is relative to the tumour's modal level.
+
+# 5. Negative controls
+
+## 5.1 Held-out diploid reference cells
+
+In the cell-line mixture, 30% of PrEC cells were held out of the reference and kept as diploid test cells; in WA71, 20% of stromal and immune cells were. The repository scripts do **not** write out the call rate in
+these held-out cells on the real data, so there is no table here to support a false-positive claim for them. The unit test `heldout diploid cells are not called` checks the behaviour on simulated counts only.
+The call threshold is chosen so that at most 2% of leave-one-out reference metacells carry any call (`fp_target`); this is a calibration target on the reference metacells themselves, not an independent estimate of the false-positive rate.
+The independent real-data check is the healthy-donor analysis in 5.2.
+
+## 5.2 Healthy prostate epithelium, leave-one-donor-out
+
+For each healthy donor, the epithelial offset was estimated from the other two donors and applied to that donor's epithelium, which was analysed against that donor's own stromal and immune cells.
+
+```{r lodo}
+l <- rd("healthy_lodo_negative_control.csv")
+lv <- l %>% group_by(variant) %>% summarise(`metacells with any call` = pct(mean(frac_meta_any_call), 1), `RMS log2 ratio` = f2(mean(rms_r_epi), 3), `donors` = n(), .groups = "drop")
+tab(lv)
+```
+
+```{r lodo-fig, out.width="100%"}
+img("fig_healthy_offset_negative_control.png")
+```
+
+Without an offset, `r pct(l$frac_meta_any_call[l$variant == "no offset"] %>% mean(), 1)` of healthy diploid epithelial metacells carry a call, above the 2% reference calibration target, so the calibration on the reference lineages does not carry over fully to epithelium.
+Offsets from the other donors lower the RMS signal in diploid epithelium, and the bin-permuted control raises it, so the offset carries real structure.
+The improvement is partial. With only 3 donors, the between-donor variance is poorly estimated.
+
+## 5.3 Does the offset help detection in WA71?
+
+```{r wa71-offset}
+w <- rd("wa71_healthy_offset_results.csv") %>% filter(profile == "seg") %>%
+  transmute(offset = trial, `gain sensitivity` = f2(sens_gain_fpr10), `loss sensitivity` = f2(sens_loss_fpr10), `pooled Pearson` = f2(pooled_pearson))
+tab(w)
+```
+
+```{r wa71-offset-text}
+hw <- rd("wa71_healthy_offset_results.csv") %>% filter(profile == "seg")
+n0 <- hw %>% filter(trial == "no offset"); hh_ <- hw %>% filter(grepl("^healthy, all epithelium$|^healthy, luminal$|^healthy, basal$", trial)); pm <- hw %>% filter(grepl("^control", trial))
+```
+
+Gain sensitivity with no offset is `r f2(n0$sens_gain_fpr10)`; the healthy-donor offsets give `r f2(min(hh_$sens_gain_fpr10))` to `r f2(max(hh_$sens_gain_fpr10))`.
+Loss sensitivity is `r f2(n0$sens_loss_fpr10)` without an offset and `r f2(min(hh_$sens_loss_fpr10))` to `r f2(max(hh_$sens_loss_fpr10))` with one.
+The pooled Pearson correlation with DNA is lower with every healthy-donor offset (`r f2(min(hh_$pooled_pearson))` to `r f2(max(hh_$pooled_pearson))`, against `r f2(n0$pooled_pearson)`).
+So none of the offsets shows a consistent gain over no offset in WA71. The bin-permuted control reduces gain sensitivity to `r f2(pm$sens_gain_fpr10)`, which shows that the offset's bin structure matters when it is applied.
+The offset is therefore **unproven for this metastasis**.
+
+# 6. Primary tumours (no DNA available)
+
+There is no DNA for these samples, so there is no truth. The heatmap shows metacell-level profiles after the healthy-donor, subtype-matched offset. Rows above the black line are epithelial metacells,
+rows below are leave-one-out stromal and immune reference metacells. The grey bar next to the subtype bar shows the library label of the cells in each metacell. It is annotation only and was not used in the analysis.
+
+```{r heatmap, out.width="100%"}
+img("fig_wong_metacell_heatmap_seg.png")
+```
+
+```{r group-calls}
+HT <- rd("healthy_group_level_calls.csv"); GT <- rd("wong_group_level_calls.csv")
+hm <- HT %>% filter(variant == "healthy_matched"); wm <- GT %>% filter(variant == "healthy_matched")
+amp <- rd("group_amplitude_healthy_vs_wong.csv")
+a_ <- rd("arm_library_check.csv"); a18 <- a_ %>% filter(patient == "ICC7", arm == "18q")
+am  <- rd("group_arm_means.csv"); names(am)[1] <- "id"
+arm_cols <- setdiff(names(am), "id"); am$who <- sub("\\|.*$", "", am$id); am$maxarm <- apply(abs(as.matrix(am[, arm_cols])), 1, max, na.rm = TRUE)
+hh <- am %>% filter(who == "Healthy") %>% pull(maxarm); ww <- am %>% filter(who == "Wong") %>% pull(maxarm)
+```
+
+* **Group-level calls are not calibrated against healthy epithelium.** With the matched offset, `r sum(hm$n_bins_called > 0)` of `r nrow(hm)` healthy diploid epithelial groups received at least one call,
+  covering up to `r pct(max(hm$frac_bins_called))` of bins. Pooling lowers white noise, so structured non-copy-number expression differences dominate at the group level.
+* **Pooled amplitudes overlap.** The largest arm-level |log2 ratio| of a group's fitted profile has a median of `r f2(median(hh))` in `r length(hh)` healthy groups and `r f2(median(ww))` in `r length(ww)` primary-tumour groups.
+  `r sum(hh > 0.75)` healthy group and `r sum(ww > 0.75)` tumour groups exceed 0.75, so large events separate the two sets while the bulk of the distributions overlap.
+  The healthy maximum is `r f2(max(hh))`.
+* **Strong events separate by library label, weaker ones do not.** For arms picked by eye from the heatmap, the table gives the median arm-level ratio of tumour-library versus benign-library metacells.
+  The choice of arms is descriptive and not a calibrated test.
+  Not every row separates: for ICC7 18q, `r pct(a18$frac_benignlib_below_minus0p25, 1)` of benign-labelled-library metacells also show the loss. That could be tumour cells inside the benign library or a non-copy-number signal; without DNA the two cannot be told apart here.
+
+```{r arm-check}
+a <- rd("arm_library_check.csv")
+a %>% transmute(patient, arm, `tumour-library metacells` = n_tumourlib, `median ratio (tumour lib.)` = f2(med_tumourlib), `benign-library metacells` = n_benignlib,
+                `median ratio (benign lib.)` = f2(med_benignlib), `benign-lib. metacells below -0.25` = pct(frac_benignlib_below_minus0p25, 1)) %>% tab()
+```
+
+* **Shared vertical stripes across all seven patients** in the unsegmented heatmap (`fig_wong_metacell_heatmap_raw.png`) look like residual lineage or cell-state signal that the offset does not remove.
+* **The depth-downsampling "truth" for primary tumours is not DNA.** It is a pooled full-depth expression profile built by this pipeline from the other half of each patient's tumour-library epithelium.
+  The within-pipeline comparison of metacells with single cells is fair; the comparison with the inferCNV-style baseline is biased towards this pipeline there.
+  The healthy-epithelium comparison above shows that this profile contains non-copy-number structure, so the primary-tumour sensitivities should not be read as detection of true events.
+
+# 7. Known limitations
+
+1. **Expression-only.** Ploidy, copy-neutral LOH and balanced gains are not identifiable. Truth profiles are mode-centred before comparison.
+2. **One metastasis with DNA.** WA71 is a single tumour; its low loss sensitivity is consistent with most losses being CN 3 against a CN 4 baseline (log2 ratio about -0.4).
+3. **Primary tumours have no orthogonal truth.** Identity resolution (aneuploid versus diploid) by CNV is **not solved** at the metacell or group level; only strong, patient-specific events separate.
+4. **Offsets are estimated from 3 donors** (10x 3' v2, one platform), transfer only partially and did not help in WA71.
+5. **Library labels.** `scripts/12_depth_wong_benign_library.py` still treats benign-labelled libraries as normal (for the offset and as a control). The label-free analysis is `scripts/30_wong_library_agnostic.py`.
+6. **Subclonal events smaller than one metacell are blurred** because cells in a metacell share its profile. This was not tested.
+7. **WA71 counts are non-integer** (ambient-corrected). They were stochastically rounded to integers for count splitting and thinning.
+8. **Threshold-free sensitivity uses the truth** (Section 3).
+9. **PNT2 is not scored.** The cell-line object holds eight labels. Besides the six cancer lines and the PrEC reference it contains `r format(1269, big.mark = ",")` PNT2 cells, an immortalised non-tumour line that has no copy-number entry in the CCLE study used for truth. These cells are processed as an unscored query group (they enter gene selection and downsampling) and are excluded from every metric. Their copy-number state is not established, so they are not used as a diploid control either.
+
+# 8. Reproducibility and run-to-run variability
+
+```{r repro-tab}
+rc <- rd("reproducibility_check.csv")
+cnt <- rc %>% filter(metric == "n_meta"); rc <- rc %>% filter(metric != "n_meta")
+rcs <- rc %>% group_by(file) %>% summarise(`rows matched` = max(rows_matched), `largest abs. difference` = f2(max(max_abs_diff), 4), `mean abs. difference` = f2(max(mean_abs_diff), 4), .groups = "drop")
+tab(rcs)
+exact <- rcs$file[as.numeric(rcs$`largest abs. difference`) == 0]
+tr <- rd("thinning_replicate_check.csv") %>% filter(frac < 1)
+gp <- tr %>% select(dataset, frac, method, g = sens_gain_fpr10_full) %>% pivot_wider(names_from = method, values_from = g)
+gap <- min(gp$`metacell-20 (pipeline)` - gp$`single-cell (pipeline)`)
+```
+
+The table compares tables regenerated from this repository with those from the first analysis run (before packaging); differences are in score units (sensitivities, AUCs, correlations, log2 ratios).
+`r length(exact)` of `r nrow(rcs)` files reproduce exactly: `r paste(exact, collapse = ", ")`.
+The remaining files all involve the primary-tumour analysis. The first run seeded the per-patient subsampling with Python's per-process salted `hash()`, and the repository uses a stable seed, so the subsample differs; the number of metacells in a group changed by at most `r max(cnt$max_abs_diff)`.
+
+Each depth in the downsampling experiment uses **one** binomial thinning realisation. A second realisation at the shared depths (`thinning_replicate_check.csv`) moved the mean sensitivities by up to
+`r f2(max(c(tr$abs_diff_gain, tr$abs_diff_loss)))` (gain: `r f2(max(tr$abs_diff_gain))`, loss: `r f2(max(tr$abs_diff_loss))`), whereas the metacell-minus-single-cell gain difference at those depths is at least `r f2(gap)` (Section 3).
+No confidence intervals were computed.
+
+# 9. Reproducing this report
+
+```{r repro, eval=FALSE, echo=TRUE}
+# from the repository root, after running the pipeline (see README)
+rmarkdown::render("analysis/testing_summary.Rmd", output_format = c("github_document", "html_document"))
+```
+
+```{r session}
+sessionInfo()
+```

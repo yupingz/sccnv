@@ -1,0 +1,19 @@
+# data and intermediates are not versioned
+data/
+work/
+results/run/
+results/run_*.log
+*.pkl
+*.npz
+*.rds
+*.h5ad
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+# R / rmarkdown
+.Rhistory
+.RData
+analysis/*_cache/

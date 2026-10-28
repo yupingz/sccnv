@@ -1,0 +1,29 @@
+name: sccnv
+channels: [conda-forge, bioconda, defaults]
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - pandas
+  - numba
+  - scikit-learn
+  - matplotlib
+  - requests
+  - pytest
+  # optional: Leiden clustering (sccnv.cluster_cells) and the infercnvpy cross-check
+  - scanpy
+  - python-igraph
+  - leidenalg
+  # R side: Seurat export and the testing report
+  - r-base=4.5
+  - r-seurat
+  - r-matrix
+  - r-rmarkdown
+  - r-knitr
+  - r-dplyr
+  - r-tidyr
+  - r-ggplot2
+  - pandoc
+  - pip
+  - pip:
+      - infercnvpy

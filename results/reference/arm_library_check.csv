@@ -1,0 +1,8 @@
+patient,arm,n_tumourlib,med_tumourlib,n_benignlib,med_benignlib,frac_benignlib_below_minus0p25,frac_tumourlib_below_minus0p25
+ICC2,16q,58,-1.071,14,-0.085,0.071,0.879
+ICC2,15q,58,0.07,14,-0.029,0.0,0.0
+ICC4,8p,104,-0.97,19,0.078,0.053,1.0
+ICC4,13q,104,-0.707,19,0.077,0.0,0.981
+ICC4,16q,104,-1.0,19,-0.154,0.105,0.981
+ICC7,13q,71,-0.452,14,0.056,0.0,0.634
+ICC7,18q,71,-0.977,14,-0.274,0.643,0.831
